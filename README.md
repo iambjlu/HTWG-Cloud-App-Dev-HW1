@@ -1,5 +1,7 @@
 # Exercise 1
 
+[Demo Video](https://www.youtube.com/watch?v=DSUfsitr7JY)
+
 ## Description and Instructions
 
 ### Description
