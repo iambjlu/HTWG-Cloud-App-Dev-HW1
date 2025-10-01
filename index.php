@@ -89,6 +89,46 @@ if ($isApi) {
                 echo json_encode(['trip'=>$row]);
                 break;
             
+            /* 4 修改行程 */
+            case 'update_trip':
+                $req = array_map('trim', $body);
+                $id    = (int)($req['id'] ?? 0);
+                $email = $req['email'] ?? '';
+                if(!$id || !$email) throw new Exception('id & email required',400);
+
+                $uid = $pdo->query("SELECT id FROM users WHERE email='$email'")->fetchColumn();
+                if(!$uid) throw new Exception('user not found',404);
+                $owner = $pdo->query("SELECT 1 FROM trips WHERE id=$id AND user_id=$uid")->fetchColumn();
+                if(!$owner) throw new Exception('permission denied',403);
+
+                $fields = ['title','destination','start_date','short_desc','long_desc','transport','accommodation'];
+                $set=[]; $vals=[];
+                foreach($fields as $f){
+                    if(isset($req[$f])){
+                        $set[] = "$f=?";
+                        $vals[] = $req[$f];
+                    }
+                }
+                if(!$set) throw new Exception('no fields to update',400);
+                $vals[] = $id;
+                $stmt = $pdo->prepare('UPDATE trips SET '.implode(',', $set).' WHERE id=?');
+                $stmt->execute($vals);
+                echo json_encode(['ok'=>true]);
+                break;
+
+            /* 5 刪除行程 */
+            case 'delete_trip':
+                $id    = (int)($body['id'] ?? 0);
+                $email = trim($body['email'] ?? '');
+                if(!$id || !$email) throw new Exception('id & email required',400);
+                $uid = $pdo->query("SELECT id FROM users WHERE email='$email'")->fetchColumn();
+                if(!$uid) throw new Exception('user not found',404);
+                $owner = $pdo->query("SELECT 1 FROM trips WHERE id=$id AND user_id=$uid")->fetchColumn();
+                if(!$owner) throw new Exception('permission denied',403);
+                $pdo->prepare('DELETE FROM trips WHERE id=?')->execute([$id]);
+                echo json_encode(['ok'=>true]);
+                break;
+
             case 'logout':
                //php刷新
                 echo json_encode(['ok'=>true]);
@@ -121,28 +161,40 @@ if ($isApi) {
     .muted{color:#666;font-size:0.9em}
     .error{color:#b00020}
     .container {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-}
-input,
-textarea {
-  width: 100%;
-  padding: 6px;
-  box-sizing: border-box;
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 130px 1fr;
-  gap: 8px;          
-  margin-bottom: 6px;
-}
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
+    }
+    input,
+    textarea {
+      width: 100%;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      gap: 8px;          
+      margin-bottom: 6px;
+    }
+    .msg-container{
+      display:flex;
+      align-items:center;
+      gap:4px;           /* icon 與文字間距 */
+      margin-top:4px;
+    }
+    .clear-btn{
+      background:none;
+      border:1px solid #ccc;
+      padding:2px 6px;
+      border-radius:4px;
+      cursor:pointer;
+    }
   </style>
 </head>
 <body>
 <div id="app">
-  <!--about-->
+ <!--about-->
 <div class="container">
   <div class="card">
     <h1>Trip Planner</h1>
@@ -157,14 +209,20 @@ textarea {
     <div class="row"><label>Email</label><input v-model="email"></div>
     <div class="row"><label>Name</label><input v-model="name"></div>
     <button @click="register">Go</button>
-    <span class="muted" v-if="msg">{{msg}}</span>
+    <div class="msg-container" v-if="msg">
+      <span class="muted">{{ msg }}</span>
+      <button class="clear-btn" @click="msg = ''">Dismiss</button>
+    </div>
     <div class="error" v-if="err">{{err}}</div>
   </div>
 
   <div class="card" v-if="loggedIn">
     <h2>Welcome, {{name}}</h2>
     <button @click="logout">Logout</button>
-    <span class="muted" v-if="msg">{{msg}}</span>
+    <div class="msg-container" v-if="msg">
+      <span class="muted">{{ msg }}</span>
+      <button class="clear-btn" @click="msg = ''">Dismiss</button>
+    </div>
     <div class="error" v-if="err">{{err}}</div>
   </div>
 </div>
@@ -198,11 +256,22 @@ textarea {
     <p><b>Destination</b><br>{{trip.destination}}</p>
     <p><b>Starts on</b><br>{{trip.start_date}}</p>
     <p><b>Short Description</b><br>{{trip.short_desc}}</p>
-    <p><b>Long Description</b><br>{{trip.long_desc}}</p><br>
-    <!-- <p v-if="trip.transport"><b>Transport:</b>{{trip.transport}}</p>
-    <p v-if="trip.accommodation"><b>Accommodation:</b>{{trip.accommodation}}</p>
-   -->
-</div>
+    <p><b>Long Description</b><br>{{trip.long_desc}}</p>
+
+    <!-- 編輯功能 -->
+    <button @click="toggleEdit">{{ editing ? 'Cancel' : 'Edit' }}</button>
+    <button @click="deleteTrip(trip.id)">Delete</button>
+
+    <div v-if="editing">
+      <h3>Edit Trip</h3>
+      <div class="row"><label>Title</label><input v-model="trip.title"></div>
+      <div class="row"><label>Destination</label><input v-model="trip.destination"></div>
+      <div class="row"><label>Starts on</label><input type="date" v-model="trip.start_date"></div>
+      <div class="row"><label>Short Description</label><input v-model="trip.short_desc" maxlength="80"></div>
+      <div class="row"><label>Long Description</label><textarea v-model="trip.long_desc" rows="3"></textarea></div>
+      <button @click="updateTrip">Save</button>
+    </div>
+  </div>
 
 <!-- Vue 3 CDN -->
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -214,7 +283,8 @@ const app = Vue.createApp({
     name: localStorage.name || '',
     msg: '', err: '', trips: [], trip: null,
     f: {title:'',destination:'',start_date:'',short_desc:'',long_desc:''},
-    isLoggedIn: !!localStorage.email // 預設：如果 localStorage 有存，就算登入
+    isLoggedIn: !!localStorage.email,
+    editing: false
   }
 },
 computed: {
@@ -231,7 +301,7 @@ methods: {
     const d = await r.json();
     if(!r.ok){ this.err=d.error; return }
 
-    // 註冊成功存進 localStorage改登入狀態
+    // 註冊成功存進 localStorage並改登入狀態
     localStorage.email=this.email;
     localStorage.name=this.name;
     this.isLoggedIn = true;
@@ -255,14 +325,14 @@ methods: {
     this.loadTrips();
   },
   async loadTrips(){
-    this.err=''; this.msg='';
+    if(!this.isLoggedIn) return;
     const r = await fetch(`?action=list_trips&email=${this.email}`);
     const d = await r.json();
     if(!r.ok){ this.err=d.error; return }
     this.trips = d.trips;
   },
   async detail(id){
-    this.err=''; this.msg=''; this.trip=null;
+    this.err=''; this.msg=''; this.trip=null; this.editing=false;
     const r = await fetch(`?action=get_trip&id=${id}`);
     const d = await r.json();
     if(!r.ok){ this.err=d.error; return }
@@ -276,6 +346,36 @@ methods: {
     this.trip=null;
     this.isLoggedIn = false;
     this.msg='Logged out';
+  },
+  toggleEdit(){
+    this.editing = !this.editing;
+  },
+  async updateTrip(){
+    this.err=''; this.msg='';
+    const r = await fetch('?action=update_trip',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({...this.trip, action:'update_trip', email:this.email})
+    });
+    const d = await r.json();
+    if(!r.ok){ this.err=d.error; return }
+    this.msg='Trip updated';
+    this.editing=false;
+    this.loadTrips();
+  },
+  async deleteTrip(id){
+    if(!confirm('Delete this trip?')) return;
+    this.err=''; this.msg='';
+    const r = await fetch('?action=delete_trip',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action:'delete_trip', id, email:this.email})
+    });
+    const d = await r.json();
+    if(!r.ok){ this.err=d.error; return }
+    this.msg='Trip deleted';
+    this.trip=null;
+    this.loadTrips();
   }
 }
 });
